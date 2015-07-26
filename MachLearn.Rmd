@@ -1,0 +1,133 @@
+---
+title: "Coursera Data Science Machine Learning Project"
+author: "John Beal"
+date: "Sunday, July 26, 2015"
+output: html_document
+---
+## Introduction
+
+Machine learning procedures were applied to a data set relating to how well a set of exercises were performed by a group of 6 participants. Accelerometer data from the belt, forearm, arm and dumbbell were recorded as the participants performed one set of 10 repetitions of a unilateral dumbbell bicep curl, using either correct technique or one of four deliberately incorrect techniques. Exploratory data analysis was performed to aid in feature selection, before a series of models were trained on the data using appropriate cross-validation methodology to estimate the out-of-sample error. Classification and Regression Tree and Random Forest models were fit, but the accuracy of the Random Forest model was judged to be superior. The final model produced by the Random Forest process was used to predict the outcomes of 20 cases from a reserved test data set.     
+
+## Data Collection
+
+The data used in this project originate from the Weight Lifting Exercise Dataset from the Human Activity Recognition (HAR) project website from [``Groupware@LES``](http://groupware.les.inf.puc-rio.br/har). The data were already partitioned into a training and a test set, which were read into data frames from their respective csv files.
+
+```{r GetData}
+training <- read.csv(".//Data//pml-training.csv")
+testing <- read.csv(".//Data//pml-testing.csv")
+```
+
+## Method
+
+The caret package (V.6.0-52) was used for model training and prediction. The rattle package was used to graph dendrigrams, and the polytomous package was used to calculate accuracy from contingency tables.  
+
+```{r warning = FALSE, message = FALSE}
+library(caret)
+library(rattle)
+library(polytomous)
+```
+
+
+## Exploratory Data Analysis & Feature Selection
+
+The training data set contains `r dim(training)[1]` observations of `r dim(training)[2]` variables, including the outcome variable 'classe'. The occurrence of various variable classes was examined with a contingency table. There were initially `r table(sapply(training, class))[1]` variables classified as factors, however after inspecting a list of these variables, it appeared that the majority had been misidentified by read.csv. These variables were converted to the numeric type.   
+
+```{r warning = FALSE, message = FALSE}
+table(sapply(training, class))                                                          ## Contingency table of variable class.
+allfactornames <- names(sapply(training, class)[sapply(training, class)=="factor"])     ## Names of all factor variables.
+print(allfactornames)
+keepAsFactor <- c("user_name", "cvtd_timestamp", "new_window", "classe")                ## Variables to remain as factors.
+changeAsFactor <- allfactornames[!allfactornames %in% keepAsFactor]                     ## Variables to convert to numeric.        
+for (i in seq_along(training)) {                                                        ## Loop through and convert to numeric.
+        if (names(training)[i] %in% changeAsFactor) {
+                training[, i] <- as.numeric(levels(training[ , i]))[as.integer(training[, i])]
+        }
+}
+```
+
+Secondly, the occurrence of NAs was examined. As shown in the contingency table below, there were two distinct cases: `r table(NAprop)[1]` variables with no NAs and `r table(NAprop)[2]` variables with almost all NAs. The training data set was subset to exclude those variables with a high proportion of NAs, as they were unlikely to serve as good predictors.
+
+```{r}
+NAprop <- numeric(length = length(training))                                            ## Initialise vector & assign names
+names(NAprop) <- names(training)                                                        ## from training set.
+for (i in seq_along(training)) {                                                        
+        NAprop[i] <- round((sum(is.na(training[, i]))/length(training[, i])), 3)}       ## Determine proportion of NA values.
+table(NAprop)                                                                           ## Contingency table of NA proportions.
+training2 <- training[, (names(NAprop[NAprop==0]))]                                     ## Subset on variables with no NAs.
+```
+
+Of the remaining variables, 7 were "book keeping" variables, containing information on the row number, name of participant, time stamp data and data relating to the recording window. These variables will not serve as meaningful predictors, as they do not contain generalisable information, and as such were excluded from the data set.
+
+```{r}
+training3 <- subset(training2, select = -c(1:7))        ## Remove first 7 columns pertaining to book keeping data
+```
+
+## Prediction Function Selection
+
+In order to reduce the computational requirements while developing a model, the training data set was sub-sampled by 
+partitioning, to create a smaller data set for model training and selection; while the remainder was retained to validate the preferred model before its final application to the test set.   
+
+```{r}
+inTrain <- createDataPartition(y = training3$classe, p = 0.33, list = FALSE)    ##Subsample across the classe variable to make
+training_part <- training3[inTrain, ]                                           ##smaller set for model training.
+testing_part <- training3[-inTrain, ]                                           ## Retain rest for model validation
+```
+
+### Classification and Regression Tree
+
+A Classification and Regression Tree (CART) was fit to the training data, using the rpart method and k-folds cross validation (k = 10). All 52 remaining predictors were included in the model. The dendrigram of the resulting final model is shown below. The data were split on the roll_belt, pitch_forearm, magnet_dumbell_y and roll_forearm variables. The overall accuracy of the CART model was not high, with estimated accuracy <50%.    
+
+```{r warning = FALSE, message = FALSE, cache = FALSE}
+set.seed(65784)
+train_control <- trainControl(method = "cv", number = 10)                       ## Set k-folds cross validation with k = 10
+modFit <- train(classe ~ ., method = "rpart", data = training3, 
+                trControl = train_control)                                      ## Train using rpart
+fancyRpartPlot(modFit$finalModel)
+modFit$results
+```
+
+### Random Forest
+
+A Random Forest (RF) model was fit to the partitioned training data, using the rf method and k-folds cross validation (k = 5). The out-of-bag (oob) estimate of error rate was 1.94%.    
+
+```{r cache = TRUE, message = FALSE, warning = FALSE}
+set.seed(87942)
+train_control <- trainControl(method = "cv", number = 5)                        ## Set k-folds cross validation with k = 5
+modFit2 <- train(classe ~ ., method = "rf", data = training_part, 
+                 prox = TRUE, allowParallel = TRUE)                             ## Train using rf (Random Forest) method
+modFit2                                                                         ## Random Forest output
+modFit2$finalModel                                                              ## Final model
+```
+
+It is interesting to note, that with the exception of yaw_belt, there was good concordance between the top 6 variables ranked by variable importance from the Random Forest model, and the variables selected to split the CART model on. 
+
+```{r message = FALSE, warning = FALSE}
+varImp(modFit2)                                                                 ## Variable importance for model
+```
+
+
+## Validation of Model
+
+Before preceding to validate the model on the test set, the final model from the Random Forest approach was tested on the remaining data from the training set, which the model had NOT been trained on. As can be seen in the following contingency table, the model prediction was excellent.  
+
+```{r, message = FALSE, warning = FALSE}
+pred <- predict(modFit2, newdata = testing_part)                        ##Predict for reserved training data using final model                            
+testing_part$predRight <- pred==testing_part$classe                     ## Judge success of predictions
+table(pred, testing_part$classe)                                        ## Contingency table of predictions
+crosstable.statistics(table(pred, testing_part$classe))$accuracy        ## Accuracy of predictions
+```
+
+An accuracy of `r round(crosstable.statistics(table(pred, testing_part$classe))$accuracy, 3)` was calculated, which suggests an estimated out-of-sample error rate of <2%.
+
+## Prediction of Test Set Outcomes
+
+The model was then used to predict the outcome of the 20 cases contained in the test set.
+
+```{r}
+testpred <- predict(modFit2, newdata = testing)
+testpred
+```
+## Conclusions
+
+A CART model for the outcome classe based on 52 retained predictors; and fit on a 1/3 subsample of the training set with 
+10-fold cross validation performed poorly. The estimated accuracy was <50%. When a Random Forest model was applied to the same data with 5-fold cross validation, the resulting model had an oob estimate of error rate of 1.94%. The Random Forest approach was significantly more computationally intensive (~1 hour to fit model on ~6500 observations, 52 predictors with 2.4 GHz CPU), but gave an excellent estimated out-of-sample error rate of <2%, when validated on the remaining 2/3 of the training data retained for testing (and which the model was NOT trained on). This model was then used to predict the outcome of the 20 cases contained within the test set.  
